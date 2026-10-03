@@ -3812,6 +3812,72 @@ mod drm_capturer_tests {
         }
     }
 
+    fn plane_transposed_display(name: &str, w: u32, h: u32) -> DrmDisplayInfo {
+        DrmDisplayInfo {
+            plane_transposed: true,
+            ..drm_display(name, w, h)
+        }
+    }
+
+    #[test]
+    fn delivered_transform_is_a_quarter_turn_once_the_plane_transposed() {
+        let plain = drm_display("eDP-1", 800, 1280);
+        let transposed = plane_transposed_display("eDP-1", 800, 1280);
+        for wl in [0, 90, 180, 270] {
+            assert_eq!(delivered_transform(&plain, wl), wl, "no plane rotation: the output decides");
+            assert_eq!(
+                delivered_transform(&transposed, wl),
+                90,
+                "the plane already transposed the scanout, so the output transform adds nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plane_transposed_display_advertises_its_scanout_without_a_wayland_snapshot() {
+        // The Steam Deck under gamescope: an 800x1280 portrait panel scanning out a 1280x800
+        // framebuffer through a rotate-270 plane, and no wayland output to match it with.
+        let drm = [plane_transposed_display("eDP-1", 800, 1280)];
+        let wl = scrap::wayland::display::Displays {
+            primary: 0,
+            displays: vec![],
+        };
+        let assignment = assign_wayland_outputs(&drm, &wl.displays);
+        let infos = augment_with_wayland_geometry_from(&drm, &wl, &assignment);
+        assert_eq!((infos[0].width, infos[0].height), (1280, 800));
+    }
+
+    #[test]
+    fn a_plane_transposed_display_is_not_swapped_again_by_its_rotated_output() {
+        // A compositor that rotates the output AND the plane (mutter on i915): one quarter turn,
+        // advertised once, exactly as before the plane was taken into account.
+        let drm = [plane_transposed_display("HDMI-A-1", 1920, 1080)];
+        let mut out = wl_display("HDMI-1", 0, 0, 1920, 1080);
+        out.transform = 90;
+        let wl = scrap::wayland::display::Displays {
+            primary: 0,
+            displays: vec![out],
+        };
+        let assignment = assign_wayland_outputs(&drm, &wl.displays);
+        let infos = augment_with_wayland_geometry_from(&drm, &wl, &assignment);
+        assert_eq!((infos[0].width, infos[0].height), (1080, 1920));
+    }
+
+    #[test]
+    fn a_plane_transposed_scanout_matches_the_session_it_was_advertised_with() {
+        // Sized the way new() sizes it, then fed the frame the plane actually scans out.
+        let d = plane_transposed_display("eDP-1", 800, 1280);
+        let session = rotated_dims(delivered_transform(&d, 0), d.width as usize, d.height as usize);
+        assert_eq!(session, (1280, 800));
+        let mut c = capturer_named(Some(session), Some("test:plane-transposed-session"));
+        put_frame_rot(&c, 1280, 800, Some(0x8));
+        assert!(
+            matches!(c.frame(Duration::from_millis(50)), Ok(_)),
+            "the transposed scanout is the advertised geometry and must be delivered"
+        );
+        assert!(c.got_frame);
+    }
+
     #[test]
     fn a_lone_rotated_output_advertises_delivered_dimensions() {
         // Fix for the origin-only cut: one connector, one rotated output. The capturer will

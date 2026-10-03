@@ -304,6 +304,13 @@ fn drm_displays_from_reader(
 const DRM_MODE_ROTATE_90: u32 = 0x2;
 const DRM_MODE_ROTATE_270: u32 = 0x8;
 
+/// A plane `rotation` mask that turns the framebuffer a quarter, so the scanout is the mode
+/// transposed. Reflections ride along in the same mask and do not change the dimensions; an
+/// unreadable property (None) is treated as unrotated, like the per-frame path does.
+fn rotation_transposes(mask: Option<u32>) -> bool {
+    mask.is_some_and(|m| m & (DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270) != 0)
+}
+
 /// Whether the primary plane on `crtc_id` rotates by 90/270 in hardware. Read through a reader
 /// bound to THAT crtc: the enumerating reader is bound to whichever one auto-select picked.
 fn plane_transposed(device: &str, crtc_id: u32) -> bool {
@@ -311,9 +318,7 @@ fn plane_transposed(device: &str, crtc_id: u32) -> bool {
     let Some(mut r) = scrap::drm_reader::DrmReader::open(dev, crtc_id) else {
         return false;
     };
-    let transposed = r
-        .query_plane_rotation()
-        .is_some_and(|m| m & (DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270) != 0);
+    let transposed = rotation_transposes(r.query_plane_rotation());
     if transposed {
         log::debug!("drm: crtc {crtc_id} ({device:?}) is rotated 90/270 by its plane; advertising the transposed scanout");
     }
@@ -1654,6 +1659,20 @@ mod drm_conn_tests {
     use hbb_common::tokio::{self, io::AsyncWriteExt};
     use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
+    #[test]
+    fn only_quarter_turns_transpose_the_scanout() {
+        const ROTATE_0: u32 = 0x1;
+        const ROTATE_180: u32 = 0x4;
+        const REFLECT_X: u32 = 0x10;
+        assert!(rotation_transposes(Some(DRM_MODE_ROTATE_90)));
+        assert!(rotation_transposes(Some(DRM_MODE_ROTATE_270)));
+        assert!(rotation_transposes(Some(DRM_MODE_ROTATE_270 | REFLECT_X)));
+        assert!(!rotation_transposes(Some(ROTATE_0)));
+        assert!(!rotation_transposes(Some(ROTATE_180)));
+        assert!(!rotation_transposes(Some(ROTATE_0 | REFLECT_X)));
+        assert!(!rotation_transposes(None), "an unreadable rotation is taken as unrotated");
+    }
+
     // Added to the wire later: an older peer's message must still decode.
     #[test]
     fn drm_display_info_decodes_without_render_node() {
@@ -1665,6 +1684,7 @@ mod drm_conn_tests {
         assert_eq!(info.crtc_id, 386);
         assert!(info.render_node.is_empty(), "missing node; the consumer auto-selects only where there is one render node");
         assert!(info.device.is_empty(), "missing device means auto-detect");
+        assert!(!info.plane_transposed, "missing flag means the scanout is the mode as-is");
 
         let current = DrmDisplayInfo {
             name: "DP-1".to_owned(),
