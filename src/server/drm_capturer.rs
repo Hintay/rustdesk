@@ -1627,7 +1627,18 @@ impl Drop for UinputRefreshGuard {
 
 /// Never probes or blocks. Use in hot paths such as `wayland::clear()`, `is_inited()`, and display
 /// enumeration, where seconds of IPC would trip "deadline has elapsed".
+/// gamescope's own ScreenCast portal needs no consent and streams its composited output (overlays,
+/// scaled direct-scanout games), while a KMS grab only sees the primary plane.
+/// `RUSTDESK_GAMESCOPE_PREFER_DRM` keeps DRM there, for comparing the two.
+fn gamescope_prefers_portal() -> bool {
+    crate::platform::linux::is_gamescope_session()
+        && std::env::var_os("RUSTDESK_GAMESCOPE_PREFER_DRM").is_none()
+}
+
 pub(crate) fn is_available_cached() -> bool {
+    if gamescope_prefers_portal() {
+        return false;
+    }
     matches!(&*DRM_STATE.lock().unwrap(), ProbeState::Available(..))
 }
 
@@ -1644,6 +1655,9 @@ pub(crate) enum Availability {
 /// reads `availability_cached`. This blocking form serves the capture-side callers through
 /// `is_available`, where waiting out a settle is acceptable.
 fn availability() -> Availability {
+    if gamescope_prefers_portal() {
+        return Availability::Unavailable;
+    }
     let (verdict, stale_no) = {
         let st = DRM_STATE.lock().unwrap();
         // Keep a settled "no" while an off-thread probe re-verifies it, avoiding a transient
@@ -1683,6 +1697,9 @@ fn availability() -> Availability {
 /// Non-blocking login-path assessment.
 /// Unknown starts a probe off-thread; callers require `Available` before admitting a session.
 pub(crate) fn availability_cached() -> Availability {
+    if gamescope_prefers_portal() {
+        return Availability::Unavailable;
+    }
     let (verdict, stale_no) = {
         let st = DRM_STATE.lock().unwrap();
         let stale_no =
