@@ -59,6 +59,45 @@ lazy_static::lazy_static! {
     static ref IS_LOGIN_SCREEN_WAYLAND: bool = is_login_screen_wayland();
 }
 
+#[cfg(feature = "drm")]
+lazy_static::lazy_static! {
+    /// The per-session `--server` runs inside a gamescope session (Steam Deck Game Mode).
+    static ref IS_GAMESCOPE_SESSION: bool = detect_gamescope_session();
+}
+
+/// gamescope composites its cursor itself and never scans it out on a KMS cursor plane, so the
+/// DRM cursor always reads hidden there, while its Xwayland (`:0`, where Steam runs) still knows the
+/// cursor shape through XFixes. Detected by gamescope's wayland socket in the runtime dir: the
+/// `--server` is given no desktop variables to go by.
+#[cfg(feature = "drm")]
+fn detect_gamescope_session() -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let found = entries.flatten().any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("gamescope-")
+            && !name.ends_with(".lock")
+            && !name.ends_with("-ei")
+            && e.file_type().map(|t| t.is_socket()).unwrap_or(false)
+    });
+    if found {
+        log::info!("gamescope session detected; the cursor shape comes from XFixes on its Xwayland");
+    }
+    found
+}
+
+/// Whether a hidden DRM cursor is authoritative: only in a pure-DRM session that is not gamescope.
+#[cfg(feature = "drm")]
+fn drm_hidden_cursor_is_authoritative() -> bool {
+    !crate::server::display_service::has_non_drm_backed_display() && !*IS_GAMESCOPE_SESSION
+}
+
 lazy_static::lazy_static! {
     /// `is_x11_or_headless()` answers x11 at a Wayland greeter, which the portal could not
     /// serve but the DRM path can. Unmemoised lookup on purpose: this may run mid-boot, and
@@ -577,9 +616,7 @@ pub fn get_cursor() -> ResultType<Option<u64>> {
             // PipeWire display where it is still visible, so only report a hidden DRM cursor when it
             // is authoritative -- a pure-DRM session. A visible DRM cursor is always authoritative;
             // otherwise fall through to the normal cursor path.
-            if id != scrap::drm_reader::HIDDEN_CURSOR_ID
-                || !crate::server::display_service::has_non_drm_backed_display()
-            {
+            if id != scrap::drm_reader::HIDDEN_CURSOR_ID || drm_hidden_cursor_is_authoritative() {
                 return Ok(Some(id));
             }
         }
@@ -614,9 +651,7 @@ pub fn get_cursor_data(hcursor: u64) -> ResultType<CursorData> {
             // See get_cursor(): a hidden DRM sentinel is authoritative only in a pure-DRM session. In
             // a mixed DRM + PipeWire session fall through so the PipeWire display's cursor is served
             // by the normal path instead of being hidden everywhere.
-            if c.id != scrap::drm_reader::HIDDEN_CURSOR_ID
-                || !crate::server::display_service::has_non_drm_backed_display()
-            {
+            if c.id != scrap::drm_reader::HIDDEN_CURSOR_ID || drm_hidden_cursor_is_authoritative() {
                 let mut cd: CursorData = Default::default();
                 cd.id = c.id;
                 cd.width = c.width;
