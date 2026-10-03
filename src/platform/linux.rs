@@ -121,6 +121,65 @@ pub fn gamescope_ei_socket() -> Option<std::path::PathBuf> {
     find_runtime_socket(is_gamescope_ei_socket_name)
 }
 
+/// gamescope run with `--cursor-scale-height` (as gamescope-session does) makes X clients load
+/// 256 px cursors and draws them at 36 px per that many lines of output; without the same shrink
+/// the client draws the whole 256 px image.
+#[cfg(feature = "drm")]
+fn gamescope_cursor_size(output_height: u32) -> u32 {
+    const BASE: u32 = 36;
+    const SCALE_HEIGHT: u32 = 720;
+    (BASE * (output_height / SCALE_HEIGHT).max(1)).min(256)
+}
+
+#[cfg(feature = "drm")]
+fn x_output_height() -> u32 {
+    DISPLAY.with(|conn| match conn.try_borrow() {
+        Ok(d) if !d.is_null() => unsafe { XDisplayHeight(*d, XDefaultScreen(*d)) }.max(0) as u32,
+        _ => 0,
+    })
+}
+
+/// Box-filter the premultiplied RGBA shape down to fit `size`, keeping its aspect and hotspot.
+#[cfg(feature = "drm")]
+fn shrink_cursor(cd: &mut CursorData, size: u32) {
+    let (w, h, size) = (cd.width.max(0) as usize, cd.height.max(0) as usize, size as usize);
+    if (w <= size && h <= size) || cd.colors.len() != w * h * 4 {
+        return;
+    }
+    let (tw, th) = if w >= h {
+        (size, (h * size / w).max(1))
+    } else {
+        ((w * size / h).max(1), size)
+    };
+    let span = |t: usize, n: usize, tn: usize| (t * n / tn, ((t + 1) * n / tn).max(t * n / tn + 1));
+    let mut dst = vec![0u8; tw * th * 4];
+    for ty in 0..th {
+        let (y0, y1) = span(ty, h, th);
+        for tx in 0..tw {
+            let (x0, x1) = span(tx, w, tw);
+            let mut sum = [0u32; 4];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = (y * w + x) * 4;
+                    for (c, v) in sum.iter_mut().enumerate() {
+                        *v += cd.colors[p + c] as u32;
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            let p = (ty * tw + tx) * 4;
+            for (c, v) in sum.iter().enumerate() {
+                dst[p + c] = (v / n) as u8;
+            }
+        }
+    }
+    cd.hotx = (cd.hotx as i64 * tw as i64 / w as i64) as i32;
+    cd.hoty = (cd.hoty as i64 * th as i64 / h as i64) as i32;
+    cd.width = tw as i32;
+    cd.height = th as i32;
+    cd.colors = dst.into();
+}
+
 /// Whether a hidden DRM cursor is authoritative: only in a pure-DRM session that is not gamescope.
 #[cfg(feature = "drm")]
 fn drm_hidden_cursor_is_authoritative() -> bool {
@@ -419,6 +478,13 @@ extern "C" {
     fn XOpenDisplay(display_name: *const c_char) -> *mut c_void;
     // fn XCloseDisplay(d: *mut c_void) -> c_int;
     fn XSetErrorHandler(handler: Option<XErrorHandler>) -> Option<XErrorHandler>;
+}
+
+#[cfg(feature = "drm")]
+#[link(name = "X11")]
+extern "C" {
+    fn XDefaultScreen(d: *mut c_void) -> c_int;
+    fn XDisplayHeight(d: *mut c_void, screen: c_int) -> c_int;
 }
 
 #[link(name = "Xfixes")]
@@ -738,6 +804,12 @@ pub fn get_cursor_data(hcursor: u64) -> ResultType<CursorData> {
             }
         }
     });
+    #[cfg(feature = "drm")]
+    if is_gamescope_session() {
+        if let Some(cd) = res.as_mut() {
+            shrink_cursor(cd, gamescope_cursor_size(x_output_height()));
+        }
+    }
     match res {
         Some(x) => Ok(x),
         _ => bail!("Failed to get cursor image of {}", hcursor),
@@ -3046,5 +3118,37 @@ mod gamescope_socket_tests {
         assert!(!is_gamescope_ei_socket_name("gamescope-0-ei.lock"));
         assert!(!is_gamescope_ei_socket_name("gamescope-0"));
         assert!(!is_gamescope_ei_socket_name("gamescope--ei"));
+    }
+
+    #[test]
+    fn gamescope_cursor_follows_its_scale_height() {
+        assert_eq!(gamescope_cursor_size(0), 36);
+        assert_eq!(gamescope_cursor_size(800), 36);
+        assert_eq!(gamescope_cursor_size(1440), 72);
+        assert_eq!(gamescope_cursor_size(8640), 256);
+    }
+
+    #[test]
+    fn gamescope_cursor_is_shrunk_with_its_hotspot() {
+        let mut cd = CursorData {
+            hotx: 40,
+            hoty: 24,
+            width: 256,
+            height: 256,
+            colors: vec![255u8; 256 * 256 * 4].into(),
+            ..Default::default()
+        };
+        shrink_cursor(&mut cd, 36);
+        assert_eq!((cd.width, cd.height, cd.hotx, cd.hoty), (36, 36, 5, 3));
+        assert!(cd.colors.iter().all(|&c| c == 255));
+
+        let mut small = CursorData {
+            width: 32,
+            height: 32,
+            colors: vec![0u8; 32 * 32 * 4].into(),
+            ..Default::default()
+        };
+        shrink_cursor(&mut small, 36);
+        assert_eq!((small.width, small.height), (32, 32));
     }
 }
