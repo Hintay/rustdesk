@@ -187,7 +187,11 @@ impl PipeWireCapturable {
             source_type: stream.source_type,
             primary: false,
             position: stream.position,
-            logical_size: stream.size,
+            logical_size: if stream.size == (0, 0) {
+                physical_size
+            } else {
+                stream.size
+            },
             physical_size,
         }
     }
@@ -704,17 +708,18 @@ fn streams_from_response(response: OrgFreedesktopPortalRequestResponse) -> Vec<P
                         position: (0, 0),
                         size: (0, 0),
                     };
-                    let v = attributes
-                        .get("size")?
-                        .as_iter()?
-                        .filter_map(|v| {
-                            Some(
-                                v.as_iter()?
-                                    .map(|x| x.as_i64().unwrap_or(0))
-                                    .collect::<Vec<i64>>(),
-                            )
-                        })
-                        .next();
+                    // `size` is optional in the portal API; gamescope omits it.
+                    let v = attributes.get("size").and_then(|size| {
+                        size.as_iter()?
+                            .filter_map(|v| {
+                                Some(
+                                    v.as_iter()?
+                                        .map(|x| x.as_i64().unwrap_or(0))
+                                        .collect::<Vec<i64>>(),
+                                )
+                            })
+                            .next()
+                    });
                     if let Some(v) = v {
                         if v.len() == 2 {
                             info.size.0 = v[0] as _;
