@@ -65,37 +65,66 @@ lazy_static::lazy_static! {
     static ref IS_GAMESCOPE_SESSION: bool = detect_gamescope_session();
 }
 
+/// `gamescope-<N>`: gamescope's wayland socket.
+#[cfg(feature = "drm")]
+fn is_gamescope_wayland_socket_name(name: &str) -> bool {
+    name.strip_prefix("gamescope-")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `gamescope-<N>-ei`: gamescope's EIS (libei) socket.
+#[cfg(feature = "drm")]
+fn is_gamescope_ei_socket_name(name: &str) -> bool {
+    name.strip_suffix("-ei")
+        .is_some_and(is_gamescope_wayland_socket_name)
+}
+
+/// The first socket in the session's runtime dir whose name passes `pred`. Read from
+/// `XDG_RUNTIME_DIR`, the one session variable the `--server` is given.
+#[cfg(feature = "drm")]
+fn find_runtime_socket(pred: fn(&str) -> bool) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| pred(&e.file_name().to_string_lossy()))
+        .filter(|e| e.file_type().map(|t| t.is_socket()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    // Deterministic: the lowest instance, as gamescope numbers them from 0.
+    found.sort();
+    found.into_iter().next()
+}
+
 /// gamescope composites its cursor itself and never scans it out on a KMS cursor plane, so the
 /// DRM cursor always reads hidden there, while its Xwayland (`:0`, where Steam runs) still knows the
 /// cursor shape through XFixes. Detected by gamescope's wayland socket in the runtime dir: the
 /// `--server` is given no desktop variables to go by.
 #[cfg(feature = "drm")]
 fn detect_gamescope_session() -> bool {
-    use std::os::unix::fs::FileTypeExt;
-    let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") else {
-        return false;
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    let found = entries.flatten().any(|e| {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        name.starts_with("gamescope-")
-            && !name.ends_with(".lock")
-            && !name.ends_with("-ei")
-            && e.file_type().map(|t| t.is_socket()).unwrap_or(false)
-    });
+    let found = find_runtime_socket(is_gamescope_wayland_socket_name).is_some();
     if found {
-        log::info!("gamescope session detected; the cursor shape comes from XFixes on its Xwayland");
+        log::info!("gamescope session detected");
     }
     found
+}
+
+#[cfg(feature = "drm")]
+pub fn is_gamescope_session() -> bool {
+    *IS_GAMESCOPE_SESSION
+}
+
+/// gamescope's EIS socket, through which it accepts absolute pointer motion.
+#[cfg(feature = "drm")]
+pub fn gamescope_ei_socket() -> Option<std::path::PathBuf> {
+    find_runtime_socket(is_gamescope_ei_socket_name)
 }
 
 /// Whether a hidden DRM cursor is authoritative: only in a pure-DRM session that is not gamescope.
 #[cfg(feature = "drm")]
 fn drm_hidden_cursor_is_authoritative() -> bool {
-    !crate::server::display_service::has_non_drm_backed_display() && !*IS_GAMESCOPE_SESSION
+    !crate::server::display_service::has_non_drm_backed_display() && !is_gamescope_session()
 }
 
 lazy_static::lazy_static! {
@@ -2996,5 +3025,26 @@ pub fn has_gnome_shortcuts_inhibitor_permission() -> bool {
             log::debug!("Failed to query shortcuts inhibitor permission: {}", e);
             false
         }
+    }
+}
+
+#[cfg(all(test, feature = "drm"))]
+mod gamescope_socket_tests {
+    use super::*;
+
+    #[test]
+    fn gamescope_socket_names() {
+        assert!(is_gamescope_wayland_socket_name("gamescope-0"));
+        assert!(is_gamescope_wayland_socket_name("gamescope-12"));
+        assert!(!is_gamescope_wayland_socket_name("gamescope-0-ei"));
+        assert!(!is_gamescope_wayland_socket_name("gamescope-0.lock"));
+        assert!(!is_gamescope_wayland_socket_name("gamescope-stats"));
+        assert!(!is_gamescope_wayland_socket_name("gamescope-"));
+        assert!(!is_gamescope_wayland_socket_name("wayland-0"));
+
+        assert!(is_gamescope_ei_socket_name("gamescope-0-ei"));
+        assert!(!is_gamescope_ei_socket_name("gamescope-0-ei.lock"));
+        assert!(!is_gamescope_ei_socket_name("gamescope-0"));
+        assert!(!is_gamescope_ei_socket_name("gamescope--ei"));
     }
 }

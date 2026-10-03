@@ -757,8 +757,14 @@ pub async fn setup_uinput(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultT
 
     let keyboard = super::uinput::client::UInputKeyboard::new().await?;
     log::info!("UInput keyboard created");
-    let mouse = super::uinput::client::UInputMouse::new().await?;
-    log::info!("UInput mouse created");
+    let mouse: Box<dyn MouseControllable + Send> = match gamescope_mouse().await {
+        Some(mouse) => mouse,
+        None => {
+            let mouse = super::uinput::client::UInputMouse::new().await?;
+            log::info!("UInput mouse created");
+            Box::new(mouse)
+        }
+    };
 
     let mut en = ENIGO.lock().unwrap();
     // enigo guessed x11 once at construction, which is what a Wayland greeter reads as, and
@@ -767,8 +773,24 @@ pub async fn setup_uinput(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultT
     en.set_is_x11(false);
     // One lock for both, so there is no window where the keyboard is custom and the mouse is not.
     en.set_custom_keyboard(Box::new(keyboard));
-    en.set_custom_mouse(Box::new(mouse));
+    en.set_custom_mouse(mouse);
     Ok(())
+}
+
+/// gamescope ignores absolute evdev pointer motion, so in its session the pointer goes through its
+/// EIS socket instead; None everywhere else, and whenever that is unavailable.
+#[cfg(target_os = "linux")]
+async fn gamescope_mouse() -> Option<Box<dyn MouseControllable + Send>> {
+    #[cfg(feature = "drm")]
+    if crate::platform::linux::is_gamescope_session() {
+        // The handshake blocks for up to a couple of seconds.
+        if let Ok(Some(mouse)) =
+            tokio::task::spawn_blocking(super::gamescope_ei::EiMouse::new).await
+        {
+            return Some(Box::new(mouse));
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -815,6 +837,11 @@ pub async fn update_mouse_resolution(minx: i32, maxx: i32, miny: i32, maxy: i32)
                 .downcast_mut::<super::uinput::client::UInputMouse>()
             {
                 return mouse.send_refresh();
+            }
+            // ei takes coordinates as they are: there is no device range to refresh.
+            #[cfg(feature = "drm")]
+            if mouse.as_any().is::<super::gamescope_ei::EiMouse>() {
+                return Ok(());
             }
             bail!("failed to downcast custom mouse to UInputMouse");
         }
