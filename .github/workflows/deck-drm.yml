@@ -305,6 +305,8 @@ jobs:
               cargo test --locked --lib --features drm transpos
             run_drm_tests "rustdesk gamescope" \
               cargo test --locked --lib --features drm gamescope
+            run_drm_tests "scrap portal stream" \
+              cargo test --locked -p scrap --features drm portal_stream
             fi
             cargo build --locked --lib --features "$FEATURES" --release
             # Keep target/release and CARGO_HOME: they are saved to the cargo cache below.

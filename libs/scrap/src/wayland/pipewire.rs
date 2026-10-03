@@ -1171,6 +1171,8 @@ pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
                 s,
             )
         })
+        // Neither the portal nor the PipeWire stream reported a size: not capturable.
+        .filter(|c| c.logical_size != (0, 0))
         .collect())
 }
 
@@ -1737,6 +1739,33 @@ fn sort_streams(
 #[cfg(test)]
 mod tests {
     use super::stage_err;
+
+    #[test]
+    fn a_portal_stream_without_a_size_is_kept() {
+        use super::{streams_from_response, OrgFreedesktopPortalRequestResponse};
+        use dbus::arg::{PropMap, RefArg, Variant};
+        // gamescope's ScreenCast response: the node id and source_type, no size or position.
+        let mut props = PropMap::new();
+        props.insert("source_type".to_owned(), Variant(Box::new(1u32) as Box<dyn RefArg>));
+        let mut results = PropMap::new();
+        results.insert(
+            "streams".to_owned(),
+            Variant(Box::new(vec![(59u32, props)]) as Box<dyn RefArg>),
+        );
+        let msg = dbus::Message::new_signal(
+            "/org/freedesktop/portal/desktop/request/1_1/t",
+            "org.freedesktop.portal.Request",
+            "Response",
+        )
+        .unwrap()
+        .append_all(OrgFreedesktopPortalRequestResponse {
+            response: 0,
+            results,
+        });
+        let streams = streams_from_response(msg.read_all().unwrap());
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].path, 59);
+    }
 
     #[test]
     fn stage_err_keeps_the_detail_safe_for_a_placeholder() {
