@@ -3,6 +3,11 @@ name: Deck DRM build
 
 on:
   workflow_dispatch:
+    inputs:
+      run_drm_tests:
+        description: Run the drm unit tests (extra debug build, slow)
+        type: boolean
+        default: false
   push:
     branches: [deck-plane-rotation]
 
@@ -147,6 +152,19 @@ jobs:
           PY
         shell: bash
 
+      # Cargo registry + release target, so a patch iteration only rebuilds the workspace crates.
+      - name: Restore cargo cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cargo-home/registry
+            .cargo-home/git
+            target/release
+          key: deck-drm-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            deck-drm-cargo-${{ hashFiles('Cargo.lock') }}-
+            deck-drm-cargo-
+
       - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
         name: Build rustdesk
         id: vcpkg
@@ -211,13 +229,14 @@ jobs:
             tar -zxvf rust.tar.gz > /dev/null && rm rust.tar.gz
             cd rust-${{env.RUST_TOOLCHAIN_VERSION}}-x86_64-unknown-linux-gnu && ./install.sh
             rm -rf rust-${{env.RUST_TOOLCHAIN_VERSION}}-x86_64-unknown-linux-gnu
-            # edit config
-            mkdir -p ~/.cargo/
+            # edit config; CARGO_HOME lives in the workspace so the registry can be cached
+            export CARGO_HOME=/workspace/.cargo-home
+            mkdir -p "$CARGO_HOME"
             echo """
               [source.crates-io]
               registry = 'https://github.com/rust-lang/crates.io-index'
-            """ > ~/.cargo/config
-            cat ~/.cargo/config
+            """ > "$CARGO_HOME/config"
+            cat "$CARGO_HOME/config"
             # start build
             pushd /workspace
             export VCPKG_ROOT=/opt/artifacts/vcpkg
@@ -262,6 +281,8 @@ jobs:
                 exit 1
               fi
             }
+            # Opt-in for iteration builds: the tests are a full extra debug build of the crate.
+            if [ "${{ inputs.run_drm_tests }}" = "true" ]; then
             run_drm_tests "rustdesk drm_capturer_tests" \
               cargo test --locked --lib --features drm drm_capturer_tests
             run_drm_tests "rustdesk ipc::test" \
@@ -278,9 +299,9 @@ jobs:
               cargo test --locked -p scrap --features drm hotspot_guess_tests
             run_drm_tests "scrap plane_rotation_tests" \
               cargo test --locked -p scrap --features drm plane_rotation_tests
+            fi
             cargo build --locked --lib --features "$FEATURES" --release
-            rm -rf target/release/deps target/release/build
-            rm -rf ~/.cargo
+            # Keep target/release and CARGO_HOME: they are saved to the cargo cache below.
 
             # Setup Flutter
             # disable git safe.directory
@@ -305,6 +326,16 @@ jobs:
             for name in rustdesk*??.deb; do
               mv "$name" "${name%%.deb}-x86_64.deb"
             done
+
+      - name: Save cargo cache
+        if: always() && steps.vcpkg.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cargo-home/registry
+            .cargo-home/git
+            target/release
+          key: deck-drm-cargo-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
 
       # build.py can exit 0 on some inner failures, so check the artifact rather than the status.
       # The package name is the informed consent for consent-free capture, so a stock binary must
