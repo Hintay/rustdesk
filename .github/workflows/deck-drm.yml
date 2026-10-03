@@ -282,7 +282,8 @@ jobs:
               fi
             }
             # Opt-in for iteration builds: the tests are a full extra debug build of the crate.
-            if [ "${{ inputs.run_drm_tests }}" = "true" ]; then
+            # Also on a push whose commit message carries [run-tests].
+            if [ "${{ inputs.run_drm_tests || contains(github.event.head_commit.message, '[run-tests]') }}" = "true" ]; then
             run_drm_tests "rustdesk drm_capturer_tests" \
               cargo test --locked --lib --features drm drm_capturer_tests
             run_drm_tests "rustdesk ipc::test" \
@@ -299,6 +300,11 @@ jobs:
               cargo test --locked -p scrap --features drm hotspot_guess_tests
             run_drm_tests "scrap plane_rotation_tests" \
               cargo test --locked -p scrap --features drm plane_rotation_tests
+            # Steam Deck / gamescope patches.
+            run_drm_tests "rustdesk transposed plane" \
+              cargo test --locked --lib --features drm transpos
+            run_drm_tests "rustdesk gamescope" \
+              cargo test --locked --lib --features drm gamescope
             fi
             cargo build --locked --lib --features "$FEATURES" --release
             # Keep target/release and CARGO_HOME: they are saved to the cargo cache below.
