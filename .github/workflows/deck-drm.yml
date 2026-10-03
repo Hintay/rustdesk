@@ -335,6 +335,11 @@ jobs:
               mv "$name" "${name%%.deb}-x86_64.deb"
             done
 
+      # The container builds as root; hand the cached dirs back so tar can read them.
+      - name: Own the cargo cache
+        if: always() && steps.vcpkg.outcome != 'skipped'
+        run: sudo chown -R "$(id -u):$(id -g)" target .cargo-home 2>/dev/null || true
+
       - name: Save cargo cache
         if: always() && steps.vcpkg.outcome != 'skipped'
         uses: actions/cache/save@v4

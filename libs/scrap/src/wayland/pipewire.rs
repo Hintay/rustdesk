@@ -1752,13 +1752,13 @@ mod tests {
             "streams".to_owned(),
             Variant(Box::new(vec![(59u32, props)]) as Box<dyn RefArg>),
         );
-        let msg = dbus::Message::new_signal(
+        let mut msg = dbus::Message::new_signal(
             "/org/freedesktop/portal/desktop/request/1_1/t",
             "org.freedesktop.portal.Request",
             "Response",
         )
-        .unwrap()
-        .append_all(OrgFreedesktopPortalRequestResponse {
+        .unwrap();
+        msg.append_all(OrgFreedesktopPortalRequestResponse {
             response: 0,
             results,
         });
