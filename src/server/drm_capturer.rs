@@ -110,6 +110,17 @@ fn connector_key(d: &DrmDisplayInfo) -> String {
     format!("{}:{}", d.device, d.name)
 }
 
+/// The transform whose dimensions the delivered frames have: a plane rotated 90/270 in hardware
+/// already hands over the transposed scanout (and `frame_transform` then turns nothing), whatever
+/// the output transform says; otherwise the output transform is undone in software.
+fn delivered_transform(d: &DrmDisplayInfo, wl_transform: i32) -> i32 {
+    if d.plane_transposed {
+        90
+    } else {
+        wl_transform
+    }
+}
+
 /// Frame dimensions after undoing `transform` degrees of output rotation.
 fn rotated_dims(transform: i32, w: usize, h: usize) -> (usize, usize) {
     if transform == 90 || transform == 270 {
@@ -416,9 +427,13 @@ impl IpcDrmCapturer {
                 stop,
                 display,
                 connector: displays.get(wire_idx).map(connector_key),
-                session_size: displays
-                    .get(wire_idx)
-                    .map(|d| rotated_dims(wl_transform, d.width as usize, d.height as usize)),
+                session_size: displays.get(wire_idx).map(|d| {
+                    rotated_dims(
+                        delivered_transform(d, wl_transform),
+                        d.width as usize,
+                        d.height as usize,
+                    )
+                }),
                 transform: wl_transform,
                 snapshot_gen,
                 cur: Vec::new(),
@@ -2094,7 +2109,8 @@ fn augment_with_wayland_geometry_from(
         // Identity matches ONLY, the same rule the capturer's transform follows: swapping on a
         // layout-order guess advertises dimensions the capturer will not deliver.
         let is_identity = identity[i].is_some() && identity[i] == matched[i];
-        if is_identity && (w.transform == 90 || w.transform == 270) {
+        // A plane-transposed display was already swapped by `display_info_from_drm`.
+        if is_identity && !drm[i].plane_transposed && (w.transform == 90 || w.transform == 270) {
             std::mem::swap(&mut info.width, &mut info.height);
             info.original_resolution = super::display_service::get_original_resolution(
                 &drm[i].name,
@@ -2231,13 +2247,18 @@ fn swap_available_displays(list: Vec<DrmDisplayInfo>) {
 }
 
 fn display_info_from_drm(d: &DrmDisplayInfo) -> DisplayInfo {
+    let (width, height) = rotated_dims(
+        delivered_transform(d, 0),
+        d.width as usize,
+        d.height as usize,
+    );
     let original_resolution =
-        super::display_service::get_original_resolution(&d.name, d.width as usize, d.height as usize);
+        super::display_service::get_original_resolution(&d.name, width, height);
     DisplayInfo {
         x: d.x,
         y: d.y,
-        width: d.width as i32,
-        height: d.height as i32,
+        width: width as i32,
+        height: height as i32,
         name: d.name.clone(),
         online: d.active,
         cursor_embedded: false,
@@ -2302,7 +2323,11 @@ pub(super) fn get_capturer_info(
     // Origin and transform come from the ONE snapshot new() resolved, so both reflect the
     // same output assignment; dimensions stay PHYSICAL, rotated to frame orientation.
     let origin = origin.unwrap_or((d.x, d.y));
-    let (cap_w, cap_h) = rotated_dims(capturer.transform, d.width as usize, d.height as usize);
+    let (cap_w, cap_h) = rotated_dims(
+        delivered_transform(&d, capturer.transform),
+        d.width as usize,
+        d.height as usize,
+    );
     Ok(super::video_service::CapturerInfo {
         origin,
         width: cap_w,
@@ -3764,6 +3789,7 @@ mod drm_capturer_tests {
             active: true,
             render_node: String::new(),
             device: String::new(),
+            plane_transposed: false,
         }
     }
 

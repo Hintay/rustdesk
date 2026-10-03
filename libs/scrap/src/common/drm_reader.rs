@@ -545,6 +545,12 @@ impl DrmReader {
         self.last_plane_rotation
     }
 
+    /// The primary plane's rotation read NOW, for a caller that has not grabbed (enumeration):
+    /// `plane_rotation()` only reflects the last grab.
+    pub fn query_plane_rotation(&mut self) -> Option<u32> {
+        self.read_plane_rotation()
+    }
+
     fn read_plane_rotation(&mut self) -> Option<u32> {
         let f = self.lib.plane_rotation?;
         let mut rotation: u32 = 0;
