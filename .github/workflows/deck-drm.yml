@@ -1,4 +1,4 @@
-# Steam Deck: build only the unattended-wayland (DRM) deb, without publishing a release.
+# Steam Deck: build only the unattended-wayland (DRM) deb; a `deck-*` tag also publishes it as a release.
 name: Deck DRM build
 
 on:
@@ -10,6 +10,7 @@ on:
         default: false
   push:
     branches: [deck-plane-rotation]
+    tags: ['deck-*']
 
 env:
   SCITER_RUST_VERSION: "1.75" # https://github.com/rustdesk/rustdesk/discussions/7503, also 1.78 has ABI change which causes our sciter version not working, https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
@@ -28,7 +29,7 @@ env:
   FLUTTER_WINDOWS_ARM_VERSION: "3.44.9"
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
-  TAG_NAME: "nightly"
+  TAG_NAME: "${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   # vcpkg version: 2026.07.29
   # If we change the `VCPKG COMMIT_ID`, please remember:
@@ -44,7 +45,7 @@ env:
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
-  UPLOAD_ARTIFACT: "false"
+  UPLOAD_ARTIFACT: "${{ github.ref_type == 'tag' && 'true' || 'false' }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
 
 jobs:
@@ -55,6 +56,8 @@ jobs:
     needs: [generate-bridge]
     name: build rustdesk linux drm x86_64
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
@@ -382,6 +385,10 @@ jobs:
           fi
         shell: bash
 
+      - name: Checksum the deb
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: sha256sum "$DRM_DEB" > "$DRM_DEB.sha256"
+
       - name: Publish debian package
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
@@ -390,6 +397,7 @@ jobs:
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ${{ env.DRM_DEB }}
+            ${{ env.DRM_DEB }}.sha256
 
       # No UPLOAD_ARTIFACT gate: on a PR this is the only way to get at the deb that was just built.
       # always(), because a deb that failed the check above is the one most worth downloading.

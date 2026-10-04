@@ -1629,10 +1629,11 @@ impl Drop for UinputRefreshGuard {
 /// enumeration, where seconds of IPC would trip "deadline has elapsed".
 /// gamescope's own ScreenCast portal needs no consent and streams its composited output (overlays,
 /// scaled direct-scanout games), while a KMS grab only sees the primary plane.
-/// `RUSTDESK_GAMESCOPE_PREFER_DRM` keeps DRM there, for comparing the two.
+/// Opt-in through `RUSTDESK_GAMESCOPE_PREFER_PORTAL`: it costs more CPU for now, as gamescope pushes
+/// every composited frame and the PipeWire path copies each of them.
 fn gamescope_prefers_portal() -> bool {
     crate::platform::linux::is_gamescope_session()
-        && std::env::var_os("RUSTDESK_GAMESCOPE_PREFER_DRM").is_none()
+        && std::env::var_os("RUSTDESK_GAMESCOPE_PREFER_PORTAL").is_some()
 }
 
 pub(crate) fn is_available_cached() -> bool {
