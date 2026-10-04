@@ -404,7 +404,16 @@ pub fn core_main() -> Option<Vec<String>> {
                     .arg(&format!("{} --tray", crate::get_app_name().to_lowercase()))
                     .status()
                     .ok();
-                hbb_common::allow_err!(crate::run_me(vec!["--tray"]));
+                // gamescope has no tray host, and a tray that cannot load appindicator dies at once;
+                // the service reads the session env from the tray, so each death looks like a
+                // display change and restarts this server.
+                #[cfg(feature = "drm")]
+                let tray = !crate::platform::linux::is_gamescope_session();
+                #[cfg(not(feature = "drm"))]
+                let tray = true;
+                if tray {
+                    hbb_common::allow_err!(crate::run_me(vec!["--tray"]));
+                }
             }
             #[cfg(windows)]
             crate::privacy_mode::restore_reg_connectivity(true, false);
